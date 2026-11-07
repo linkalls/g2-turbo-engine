@@ -1,0 +1,71 @@
+#version 450
+
+// Experimental Tensor G2 / Mali-G710 Vulkan compute shader.
+// NOT dispatched by the Android benchmark yet.
+//
+// Per 32 weights, the shader expects 5 uint32 words:
+// [0] low 16 bits: fp16 scale; [1..4] packed Q4_0 nibble weights.
+// Q4_0 layout: low nibble -> dimensions 0..15;
+//              high nibble -> dimensions 16..31.
+// Dispatch one 64-invocation workgroup per matrix row.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Weights {
+    uint w[];
+};
+layout(set = 0, binding = 1, std430) readonly buffer Activations {
+    float x[];
+};
+layout(set = 0, binding = 2, std430) writeonly buffer Output {
+    float y[];
+};
+layout(push_constant) uniform Size {
+    uint rows;
+    uint cols;
+} shape;
+
+shared float reduced[64];
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    const uint lane = gl_LocalInvocationID.x;
+    if (row >= shape.rows) {
+        return;
+    }
+    const uint blocks = shape.cols / 32u;
+    float accumulator = 0.0;
+
+    // Each lane performs one or more independent Q4_0 block dot-products.
+    for (uint block = lane; block < blocks; block += 64u) {
+        const uint base = (row * blocks + block) * 5u;
+        const float scale = unpackHalf2x16(w[base]).x;
+        const uint xbase = block * 32u;
+        float dot = 0.0;
+
+        for (uint word_index = 0u; word_index < 4u; ++word_index) {
+            const uint packed = w[base + 1u + word_index];
+            for (uint j = 0u; j < 4u; ++j) {
+                const uint byte_value = (packed >> (j * 8u)) & 255u;
+                const float lo = float(int(byte_value & 15u) - 8);
+                const float hi = float(int(byte_value >> 4u) - 8);
+                const uint offset = word_index * 4u + j;
+                dot += lo * x[xbase + offset];
+                dot += hi * x[xbase + offset + 16u];
+            }
+        }
+        accumulator += scale * dot;
+    }
+
+    reduced[lane] = accumulator;
+    barrier();
+    for (uint step = 32u; step > 0u; step >>= 1u) {
+        if (lane < step) {
+            reduced[lane] += reduced[lane + step];
+        }
+        barrier();
+    }
+    if (lane == 0u) {
+        y[row] = reduced[0];
+    }
+}
