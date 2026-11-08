@@ -31,42 +31,53 @@ jobs:
 
       - name: Install Android platform and NDK
         run: |
-          sdkmanager --install             'platforms;android-35'             'build-tools;35.0.0'             'ndk;27.2.12479018'             'cmake;3.22.1'
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
 
       - name: Install Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      - name: Check reference and optimized kernels on host
+      - name: Host CPU numerical regression
         run: |
           cmake -S native -B /tmp/g2-native -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/g2-native -j 2
           /tmp/g2-native/g2-kernel-bench 256 512 6 | tee /tmp/g2-host-test.json
           grep -F '"pass": true' /tmp/g2-host-test.json
+          /tmp/g2-native/g2-kernel-bench 1536 1536 3 | tee /tmp/g2-large-test.json
+          grep -F '"pass": true' /tmp/g2-large-test.json
 
-      - name: Validate experimental Vulkan shader (syntax only)
+      - name: Compile Vulkan shader to Android asset
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq glslang-tools
-          glslangValidator -V -S comp             native/shaders/q4_0_gemv.comp -o /tmp/q4_0_gemv.spv
+          sudo apt-get install -y -qq glslang-tools spirv-tools
+          mkdir -p app/src/main/assets/shaders
+          glslangValidator -V -S comp \
+            native/shaders/q4_0_gemv.comp \
+            -o app/src/main/assets/shaders/q4_0_gemv.spv
+          spirv-val app/src/main/assets/shaders/q4_0_gemv.spv
+          test -s app/src/main/assets/shaders/q4_0_gemv.spv
 
-      - name: Compile Android APK with ARM SDOT
+      - name: Build release APK including Vulkan
         run: |
           gradle --no-daemon --stacktrace :app:assembleRelease
 
-      - name: Inspect final Android APK
+      - name: Validate ARM library and embedded shader
         run: |
           set -euo pipefail
-          APK='app/build/outputs/apk/release/app-release.apk'
+          APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
-          unzip -l "$APK" | grep -F 'lib/arm64-v8a/libg2turbo.so'
-          test -n "$(unzip -p "$APK" 'lib/arm64-v8a/libg2turbo.so' | wc -c)"
+          unzip -l "$APK" | grep -F "lib/arm64-v8a/libg2turbo.so"
+          unzip -l "$APK" | grep -F "assets/shaders/q4_0_gemv.spv"
           mkdir -p dist
           cp "$APK" dist/g2-turbo-kernel-bench.apk
-          sha256sum dist/g2-turbo-kernel-bench.apk > dist/SHA256SUMS.txt
+          (cd dist && sha256sum g2-turbo-kernel-bench.apk > SHA256SUMS.txt)
 
-      - name: Upload APK to public Actions artifacts
+      - name: Public APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: g2-turbo-kernel-bench-apk

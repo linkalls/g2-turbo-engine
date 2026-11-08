@@ -17,6 +17,13 @@
 #include <string>
 #include <vector>
 
+struct AAssetManager;  // Forward declaration for Android-only benchmarking.
+
+#ifdef __ANDROID__
+# include "vulkan_bench.h"
+# include <android/asset_manager_jni.h>
+#endif
+
 #if defined(__aarch64__) && defined(__ARM_FEATURE_DOTPROD)
 #  include <arm_neon.h>
 #  define G2_HAS_DOTPROD 1
@@ -187,7 +194,7 @@ void dotprod_gemv(const Matrix& m, const QuantizedInput& x, float* out) {
 
 // Repacks GGUF Q4_0 18-byte blocks into 5x32-bit words for the planned
 // Vulkan kernel: first word holds FP16 scale; remaining four hold packed bytes.
-// Currently validates the packing; GPU dispatch is NOT implemented in this APK.
+// The Android GPU path dispatches this packed layout through Vulkan.
 std::vector<uint32_t> repack_for_gpu(const Matrix& m) {
     std::vector<uint32_t> result(m.weights.size() * 5u);
     for (size_t i = 0; i < m.weights.size(); ++i) {
@@ -210,7 +217,8 @@ double milliseconds(F function, int n) {
     return std::chrono::duration<double, std::milli>(end - start).count() / n;
 }
 
-std::string bench(int rows, int cols, int repetitions) {
+std::string bench(int rows, int cols, int repetitions,
+                  AAssetManager* assets = nullptr) {
     if (rows < 1 || rows > 8192 || cols < 32 || cols > 16384 ||
         cols % 32 != 0 || repetitions < 1 || repetitions > 100)
         throw std::invalid_argument("invalid benchmark dimensions");
@@ -265,9 +273,13 @@ std::string bench(int rows, int cols, int repetitions) {
     std::ostringstream json;
     json << std::fixed << std::setprecision(6)
          << "{\n"
-         << "  \"engine\": \"G2 Turbo Engine Q4_0 kernel POC\",\n"
+         << "  \"engine\": \"G2 Turbo Engine v0.2 Q4_0 GEMV\",\n"
          << "  \"full_llm_inference\": false,\n"
+         #ifdef __ANDROID__
+         << "  \"gpu_dispatch_implemented\": true,\n"
+#else
          << "  \"gpu_dispatch_implemented\": false,\n"
+#endif
          << "  \"arm_dotprod_compiled\": " << (G2_HAS_DOTPROD ? "true" : "false") << ",\n"
          << "  \"rows\": " << rows << ",\n"
          << "  \"cols\": " << cols << ",\n"
@@ -281,8 +293,13 @@ std::string bench(int rows, int cols, int repetitions) {
          << "  \"max_absolute_error\": " << max_error << ",\n"
          << "  \"reference_checksum\": " << reference_checksum << ",\n"
          << "  \"optimized_checksum\": " << optimized_checksum << ",\n"
-         << "  \"pass\": " << (pass ? "true" : "false") << "\n"
-         << "}\n";
+         << "  \"pass\": " << (pass ? "true" : "false")
+#ifdef __ANDROID__
+         << ",\n  \"vulkan\": "
+         << vulkan_benchmark_json(gpu, x, reference, rows, cols,
+                                   repetitions, assets)
+#endif
+         << "\n}\n";
     return json.str();
 }
 
@@ -291,9 +308,11 @@ std::string bench(int rows, int cols, int repetitions) {
 #ifdef __ANDROID__
 extern "C" JNIEXPORT jstring JNICALL
 Java_dev_poteto_g2turbo_MainActivity_nativeBenchmark(
-    JNIEnv* env, jobject, jint rows, jint cols, jint repetitions) {
+    JNIEnv* env, jobject, jint rows, jint cols, jint repetitions,
+    jobject asset_manager) {
     try {
-        const std::string result = g2::bench(rows, cols, repetitions);
+        const std::string result = g2::bench(rows, cols, repetitions,
+                         AAssetManager_fromJava(env, asset_manager));
         return env->NewStringUTF(result.c_str());
     } catch (const std::exception& error) {
         const std::string message = std::string("Benchmark error: ") + error.what();
