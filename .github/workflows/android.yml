@@ -81,6 +81,9 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           unzip -l "$APK" | grep -F "lib/arm64-v8a/libg2turbo.so"
+          # The launcher must expose the new configurable real-GGUF sweep.
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" |
+            grep -F 'dev.poteto.g2turbo.SweepBenchmarkActivity'
           for variant in q4_0_gemv q4_0_gemv_32 q4_0_gemv_subgroup; do
             unzip -l "$APK" | grep -F "assets/shaders/${variant}.spv"
           done

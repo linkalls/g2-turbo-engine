@@ -164,3 +164,47 @@ The existing Q4_0 microbenchmark and GPU timestamp tests remain available.
 
 The only network access is the optional model download. Inference and result
 storage are performed locally and no telemetry is sent.
+
+## v0.6 — Real-GGUF input/output length sweep
+
+The launcher now opens the sweep screen. This is a real
+`llama.cpp` inference experiment, not the earlier synthetic GEMV.
+
+- **Two independent model slots:** PLaMo 3 Translate 0.8B GGUF `Q4_0`
+  (~548 MB) and `Q4_K_M` (~573 MB), with separate official downloads or
+  Android document picker import. Existing v0.5 selected.gguf is recognized
+  without duplicating hundreds of megabytes when its byte size matches the
+  expected variant.
+- **Configurable prompt target sizes:** defaults to
+  `300,500,1000,2000,5000,10000`; also offers a quick preset and a longer
+  preset. Prompts are generated from a user-editable English passage, repeated
+  and binary-searched by the **model's tokenizer**. The requested **and actual**
+  token counts are recorded; these are not character counts.
+- **Configurable maximum output caps:** default `32,128`, user may select any
+  1–2048-token cap separated by commas. Generation stops at the EOS or PFML3
+  boundary even if the cap is larger; the actual produced/evaluated token
+  counts are reported. A cap does *not* guarantee that many output tokens.
+- **Select CPU configurations independently:** 1/1, 2/2, 4/4, and hybrid
+  prefill-4/decode-2. `llama_set_n_threads(ctx,decode,prefill)` is used so
+  a real mixed configuration is measured, not estimated from other runs.
+- **Per-case context:** computed from actual prompt length + max output + margin,
+  rounded to 256 and limited to 16,384. A 10k-token prompt is *not* truncated
+  to the former 2,048-token fixed context. Larger contexts require more RAM
+  and may be rejected by the model/runtime.
+- **Durable partial results:** every completed experiment is appended to
+  `files/results/latest-sweep.json` and reloaded after restarting the app.
+  Press Stop to cancel between `llama_decode` chunks/steps while retaining
+  the completed tests.
+- **Export:** copy the combined JSON or create an `application/json` file
+  with Android's document picker. Copying very large JSON via clipboard can
+  exceed Android transaction limits, so file export is provided.
+- **Guardrails:** maximum 12 distinct prompt lengths, 12 output caps,
+  180 total combinations, with explicit UI progress. Very long scenarios may
+  consume substantial energy and time; start with the small preset.
+
+Each run stores model quantization reported by `llama_model_ftype()`,
+prefill and decode thread counts, context size, actual prompt token count,
+decoded token count, output-cap-reached flag, per-stage measured latencies,
+Prefill/Decode tok/s and generated text. The app does not claim custom G2
+kernels are integrated with the full decoder: the baseline remains
+`llama.cpp`'s ARM CPU backend; GPU is not used for full-model inference.

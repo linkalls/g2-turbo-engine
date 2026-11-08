@@ -2,14 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <application
-        android:label="G2 Turbo Engine · GGUF"
+        android:label="G2 Turbo · GGUF Sweep"
         android:usesCleartextTraffic="false">
-        <!-- v0.5.1: real GGUF benchmark is the home screen. -->
+        <!-- v0.6: tokenizer-aware real-model experiment grid is the home screen. -->
         <activity
             android:name=".MainActivity"
             android:exported="false" />
         <activity
             android:name=".ModelBenchmarkActivity"
+            android:exported="false" />
+        <activity
+            android:name=".SweepBenchmarkActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

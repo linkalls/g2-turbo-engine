@@ -43,7 +43,7 @@ if(ANDROID)
     target_compile_options(g2kleidi PRIVATE -O3 -march=armv8.2-a+dotprod)
     add_library(g2turbo SHARED
         src/kernel_bench.cpp src/cpu_pool.cpp src/vulkan_bench.cpp src/kleidi_bench.cpp
-        src/gguf_inference.cpp)
+        src/gguf_inference.cpp src/gguf_sweep.cpp)
     target_compile_options(g2turbo PRIVATE -O3 -ffp-contract=fast -march=armv8.2-a+dotprod)
     target_include_directories(g2turbo PRIVATE "${LLAMA_SOURCE_DIR}/include")
     target_link_libraries(g2turbo PRIVATE llama g2kleidi log android vulkan)
