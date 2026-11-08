@@ -100,6 +100,17 @@ The upstream source is not vendored here; GitHub Actions checks out the
 exact v1.9.0 commit via `scripts/fetch-kleidiai.sh`. License details:
 https://github.com/ARM-software/kleidiai/blob/v1.9.0/LICENSES/Apache-2.0.txt
 
+## v0.5.1: Actual GGUF inference opens immediately
+
+The real GGUF benchmark is now the **launcher screen** of the Android APK.
+No separate entry button is needed: after installation, launch the app and
+select the official model download or pick an existing .gguf, then tap
+**🔥 実GGUFで 1 / 2 / 4スレッドを一括測定**.
+The former Q4_0 CPU/GPU synthetic kernel suite remains available via
+**従来のQ4_0 CPU/GPUカーネルベンチを開く** at the top.
+
+The Android application label is also updated to G2 Turbo Engine · GGUF.
+
 ## v0.5: Actual GGUF inference on Pixel 7 Pro
 
 **New: one-tap real model performance test.** Open the app and tap

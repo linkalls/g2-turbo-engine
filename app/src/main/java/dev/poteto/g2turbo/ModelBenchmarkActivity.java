@@ -84,6 +84,14 @@ public final class ModelBenchmarkActivity extends Activity {
         header.setTextSize(22f);
         root.addView(header);
 
+        // The real GGUF benchmark is now the launcher activity.
+        // A visible navigation button keeps the older Q4_0 microbench usable.
+        Button kernelBenchButton = new Button(this);
+        kernelBenchButton.setText("従来のQ4_0 CPU/GPUカーネルベンチを開く");
+        kernelBenchButton.setOnClickListener(v -> startActivity(
+                new Intent(this, MainActivity.class)));
+        root.addView(kernelBenchButton);
+
         TextView help = new TextView(this);
         help.setText(
                 "PLaMo 3 Translate 0.8B (Q4_0) / Pixel 7 Pro\n\n"

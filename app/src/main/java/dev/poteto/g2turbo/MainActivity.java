@@ -82,7 +82,7 @@ public final class MainActivity extends Activity {
         root.setPadding(padding, padding, padding, padding);
 
         TextView heading = new TextView(this);
-        heading.setText("G2 Turbo Engine v0.4");
+        heading.setText("G2 Turbo Engine v0.5.1 · カーネルベンチ");
         heading.setTextSize(23f);
         root.addView(heading);
 
