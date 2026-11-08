@@ -76,7 +76,7 @@ bool pin_current_cpu(int id) {
     cpu_set_t mask;
     CPU_ZERO(&mask);
     CPU_SET(id, &mask);
-    return pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask)==0;
+    return sched_setaffinity(0, sizeof(mask), &mask)==0;
 #else
     (void)id;
     return false;
@@ -91,7 +91,7 @@ struct RestoreAffinity {
     bool applied=false;
     explicit RestoreAffinity(int target) {
 #if defined(__linux__)
-        captured=pthread_getaffinity_np(pthread_self(),sizeof(original),&original)==0;
+        captured=sched_getaffinity(0,sizeof(original),&original)==0;
         if (captured) applied=pin_current_cpu(target);
 #else
         (void)target;
@@ -100,7 +100,7 @@ struct RestoreAffinity {
     ~RestoreAffinity() {
 #if defined(__linux__)
         if (captured && applied)
-            pthread_setaffinity_np(pthread_self(),sizeof(original),&original);
+            sched_setaffinity(0,sizeof(original),&original);
 #endif
     }
 };
@@ -229,7 +229,7 @@ std::string cpu_pool_benchmark_json(
         if(pin && cpus.empty())continue;
         PersistentPool pool(pin,cpus);
         for(int count:{1,2,4}) {
-            // Restore main-thread policy after every variant.
+            // Restore calling task affinity after every variant.
             RestoreAffinity guard(pin && !cpus.empty()?cpus[0].id:-1);
             const bool main_pinned=pin && guard.applied;
             const double elapsed=median_ms(
