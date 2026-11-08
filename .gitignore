@@ -7,3 +7,6 @@ app/build/
 *.apk
 *.so
 *.spv
+
+# Third-party source fetched on CI; never vendor external libraries
+native/third_party/

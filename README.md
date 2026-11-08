@@ -1,9 +1,9 @@
-# G2 Turbo Engine v0.3 (Pixel 7 Pro / Tensor G2)
+# G2 Turbo Engine v0.4 (Pixel 7 Pro / Tensor G2)
 
 An independent experimental project exploring Q4_0 GEMV kernels, compiled ARM
 DOTPROD, and **real Android Vulkan GPU execution** on Mali-G710.
 
-## v0.3: One-tap complete benchmark
+## v0.4: One-tap CPU pool + KleidiAI + Vulkan benchmark
 
 [Download public APK from Releases](https://github.com/linkalls/g2-turbo-engine/releases)
 · [GitHub Actions](https://github.com/linkalls/g2-turbo-engine/actions/workflows/android.yml)
@@ -16,8 +16,20 @@ or **統合JSONを共有** to provide the *entire batch* in one message.
 A single JSON object contains:
 - Device model, Android SDK, UTC start/end times and overall duration.
 - Each of five matrix shapes with its own timings, accuracy and error status.
-- Scalar reference GEMV, ARM DOTPROD for 1, 2, and 4 CPU threads.
-- Three Vulkan GPU variants: legacy 64-lane, tiled 32-lane, and subgroup reduce.
+- Scalar reference GEMV and ARM DOTPROD for 1, 2, and 4 CPU threads
+  (v0.3: worker threads are created/destroyed each call).
+- Persistent 1/2/4-thread CPU worker pool: threads are created outside the
+  timed kernel and reused between invocations. Tests both unpinned scheduling
+  and best-effort affinity to the highest-ranked currently allowed cores.
+  CPU rankings are based on readable cpu_capacity or cpufreq properties;
+  device cpuset restrictions are never bypassed.
+- Actual Arm KleidiAI v1.9.0 Q4_0 SDOT micro-kernel (not a fake comparison),
+  including separately timed one-time RHS weight packing, per-inference LHS
+  activation packing, and steady-state kernel execution. The upstream source
+  is fetched at a pinned revision at build time (Apache-2.0 license).
+- Three Vulkan GPU variants: legacy 64-lane, tiled 32-lane, and subgroup
+  reduction. Their launch order is rotated between matrix shapes to limit
+  fixed-order thermal drift.
 - Per-variant GPU dispatch/fence wall time, optional Vulkan timestamp period and
   GPU timestamp execution time, cold timing, pipeline/setup/upload time,
   numerical RMSE and a correctness pass flag.
@@ -42,7 +54,8 @@ num_hidden_layers 16, num_attention_heads 16, head_dim 128.
 
 **Important limitations:** The APK uses deterministic synthetic Q4_0 matrices,
 not PLaMo's actual model weights. It does not perform token generation, GGUF
-loading, or inference graph execution. KleidiAI is not integrated yet.
+loading, or inference graph execution. KleidiAI is now integrated as a standalone
+Q4_0 SDOT kernel, not a full llama.cpp CPU backend.
 The scalar reference is deliberately unoptimized. CPU thread costs include
 creation and joining threads; a long-lived inference runtime might behave
 differently. GPU wall time is vkQueueSubmit through vkWaitForFences,
@@ -53,7 +66,9 @@ verified on the actual Pixel 7 Pro before drawing performance conclusions.
 
 ### Build architecture
 
-- `native/src/kernel_bench.cpp`: scalar Q4_0, ARM DOTPROD and CPU threading.
+- `native/src/kernel_bench.cpp`: scalar Q4_0, ARM DOTPROD and legacy CPU threading.
+- `native/src/cpu_pool.cpp`: persistent workers, per-core affinity and CPU topology.
+- `native/src/kleidi_bench.cpp`: actual pinned Arm KleidiAI Q4_0 pack and GEMV.
 - `native/src/vulkan_bench.cpp`: Vulkan buffers, dispatch, timestamp queries,
   correctness and multi-variant comparison.
 - `native/shaders/q4_0_gemv.comp`: baseline 64-lane shader.
@@ -77,3 +92,10 @@ the public [GitHub Actions workflow](.github/workflows/android.yml).
 - `native/shaders/q4_0_gemv.comp`: Q4_0 compute shader compiled to SPIR-V by CI.
 - `app/src/main/java/dev/poteto/g2turbo/MainActivity.java`: Android UI,
   5 model-shape presets and clipboard output.
+
+### Third-party code
+
+The Arm KleidiAI project is copyright Arm Limited and licensed under Apache-2.0.
+The upstream source is not vendored here; GitHub Actions checks out the
+exact v1.9.0 commit via `scripts/fetch-kleidiai.sh`. License details:
+https://github.com/ARM-software/kleidiai/blob/v1.9.0/LICENSES/Apache-2.0.txt

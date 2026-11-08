@@ -18,11 +18,14 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include "kernel_internal.h"
+#include "cpu_pool.h"
 
 struct AAssetManager;  // Forward declaration for Android-only benchmarking.
 
 #ifdef __ANDROID__
 # include "vulkan_bench.h"
+# include "kleidi_bench.h"
 # include <android/asset_manager_jni.h>
 #endif
 
@@ -42,14 +45,6 @@ struct AAssetManager;  // Forward declaration for Android-only benchmarking.
 namespace g2 {
 
 constexpr int kBlock = 32;
-
-#pragma pack(push, 1)
-struct Q40 {
-    uint16_t fp16_scale;
-    uint8_t packed[16];
-};
-#pragma pack(pop)
-static_assert(sizeof(Q40) == 18, "Q4_0 has to be 18 bytes");
 
 float half_to_float(uint16_t bits) {
     const uint32_t sign = uint32_t(bits & 0x8000u) << 16u;
@@ -78,12 +73,6 @@ float half_to_float(uint16_t bits) {
     std::memcpy(&value, &out, sizeof(value));
     return value;
 }
-
-struct Matrix {
-    int rows;
-    int cols;
-    std::vector<Q40> weights;
-};
 
 Matrix make_matrix(int rows, int cols) {
     if (rows <= 0 || cols <= 0 || cols % kBlock != 0)
@@ -132,11 +121,6 @@ void reference_gemv(const Matrix& m, const float* x, float* out) {
         out[r] = result;
     }
 }
-
-struct QuantizedInput {
-    std::vector<int8_t> x8;
-    std::vector<float> scales;
-};
 
 QuantizedInput quantize(const float* x, int cols) {
     QuantizedInput q;
@@ -301,6 +285,8 @@ std::string bench(int rows, int cols, int repetitions,
         [&] { dotprod_gemv(matrix, quantized, optimized.data()); }, repetitions);
 
     const bool pass = std::isfinite(nrmse) && nrmse < 0.05;
+    const std::string pool_results = cpu_pool_benchmark_json(
+        matrix, quantized, reference.data(), repetitions, quant_ms);
 
     // Compare CPU 1/2/4 threads using IDENTICAL weights and activations.
     // Quantization is reused within one inference; its cost is included.
@@ -329,7 +315,7 @@ std::string bench(int rows, int cols, int repetitions,
     std::ostringstream json;
     json << std::fixed << std::setprecision(6)
          << "{\n"
-         << "  \"engine\": \"G2 Turbo Engine v0.2 Q4_0 GEMV\",\n"
+         << "  \"engine\": \"G2 Turbo Engine v0.4 Q4_0 GEMV\",\n"
          << "  \"full_llm_inference\": false,\n"
          #ifdef __ANDROID__
          << "  \"gpu_dispatch_implemented\": true,\n"
@@ -350,7 +336,15 @@ std::string bench(int rows, int cols, int repetitions,
          << "  \"reference_checksum\": " << reference_checksum << ",\n"
          << "  \"optimized_checksum\": " << optimized_checksum << ",\n"
          << "  \"cpu_thread_benchmarks\": " << thread_results.str() << ",\n"
+         << "  \"cpu_persistent_pool\": " << pool_results << ",\n"
+#ifdef __ANDROID__
+         << "  \"kleidiai_integrated\": true,\n"
+         << "  \"kleidiai\": " << kleidi_benchmark_json(
+             reinterpret_cast<const uint8_t*>(matrix.weights.data()),
+             rows, cols, x, reference, repetitions) << ",\n"
+#else
          << "  \"kleidiai_integrated\": false,\n"
+#endif
          << "  \"pass\": " << (pass ? "true" : "false")
 #ifdef __ANDROID__
          << ",\n  \"vulkan\": "

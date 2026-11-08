@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * G2 Turbo Engine v0.3 — one-tap comprehensive benchmark.
+ * G2 Turbo Engine v0.4 — CPU pool, affinity and KleidiAI comparison.
  *
  * 全5サイズを自動で計測してひとつのJSONへ集約する。
  * 各サイズではスカラー・ARM SDOT(1/2/4スレッド)・Vulkan 3実装を比較。
@@ -82,18 +82,18 @@ public final class MainActivity extends Activity {
         root.setPadding(padding, padding, padding, padding);
 
         TextView heading = new TextView(this);
-        heading.setText("G2 Turbo Engine v0.3");
+        heading.setText("G2 Turbo Engine v0.4");
         heading.setTextSize(23f);
         root.addView(heading);
 
         TextView description = new TextView(this);
         description.setText(
                 "Pixel 7 Pro / Tensor G2 — 1回で全ベンチ結果を収集！\n\n" +
-                "5サイズ × CPU(スカラー・DOTPROD 1/2/4スレッド)" +
+                "5サイズ × CPU(スカラー・DOTPROD・永続プール・affinity・KleidiAI)" +
                 " × Vulkan GPU(従来64・Tiled32・Subgroup)。\n" +
                 "Vulkanの純演算時間はGPU Timestampで計測できる場合に記録。" +
                 "対応外のGPU方式はエラー理由も残す。\n\n" +
-                "※ KleidiAI未統合。PLaMo実モデルのtoken/s計測ではない。\n");
+                "※ Q4_0のマイクロベンチで、実モデルのtoken/s計測ではない。\n");
         description.setTextSize(14f);
         root.addView(description);
 
@@ -238,10 +238,10 @@ public final class MainActivity extends Activity {
 
             JSONObject aggregate = new JSONObject();
             try {
-                aggregate.put("schema_version", 1);
-                aggregate.put("engine", "G2 Turbo Engine v0.3 Q4_0 GEMV");
+                aggregate.put("schema_version", 2);
+                aggregate.put("engine", "G2 Turbo Engine v0.4 Q4_0 GEMV");
                 aggregate.put("full_llm_inference", false);
-                aggregate.put("kleidiai_integrated", false);
+                aggregate.put("kleidiai_integrated", true);
                 aggregate.put("batch_mode", all);
                 aggregate.put("started_at_utc", startedAt);
                 aggregate.put("finished_at_utc", Instant.now().toString());
@@ -311,6 +311,34 @@ public final class MainActivity extends Activity {
                             "  CPU %d threads: %.4fms\n",
                             thread.optInt("threads"),
                             thread.optDouble("total_with_activation_quant_ms")));
+                }
+            }
+            JSONObject pool = data.optJSONObject("cpu_persistent_pool");
+            if (pool != null) {
+                JSONArray variants = pool.optJSONArray("variants");
+                if (variants != null) {
+                    for (int j=0; j<variants.length(); j++) {
+                        JSONObject v = variants.optJSONObject(j);
+                        if (v == null) continue;
+                        sb.append(String.format(Locale.US,
+                                "  Pool %s %d threads: %.4fms / pin=%s\n",
+                                v.optString("strategy"),
+                                v.optInt("threads"),
+                                v.optDouble("total_with_activation_quant_ms"),
+                                v.optBoolean("main_affinity_applied") ? "yes":"no"));
+                    }
+                }
+            }
+            JSONObject kleidi = data.optJSONObject("kleidiai");
+            if (kleidi != null) {
+                if (kleidi.optBoolean("pass")) {
+                    sb.append(String.format(Locale.US,
+                            "  KleidiAI: %.4fms + weight-pack-once %.3fms\n",
+                            kleidi.optDouble("total_steady_state_ms"),
+                            kleidi.optDouble("rhs_pack_once_ms")));
+                } else {
+                    sb.append("  KleidiAI: ").append(kleidi.optString("status"))
+                        .append(" ").append(kleidi.optString("message")).append("\n");
                 }
             }
             JSONObject gpu = data.optJSONObject("vulkan");

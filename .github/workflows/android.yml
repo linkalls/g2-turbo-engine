@@ -63,7 +63,11 @@ jobs:
             spirv-val --target-env vulkan1.1 "app/src/main/assets/shaders/${variant}.spv"
           done
 
-      - name: Build release APK including Vulkan
+      - name: Fetch pinned Arm KleidiAI (Apache-2.0)
+        run: |
+          bash scripts/fetch-kleidiai.sh
+
+      - name: Build release APK including Vulkan and KleidiAI
         run: |
           gradle --no-daemon --stacktrace :app:assembleRelease
 

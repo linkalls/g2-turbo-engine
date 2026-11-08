@@ -626,7 +626,11 @@ std::string vulkan_benchmark_json(
     // Baseline v0.2, 32-thread tiled and subgroup alternatives.
     const char* names[] = {"baseline64", "tiled32", "subgroup"};
     std::vector<VariantResult> variants;
-    for (const char* name : names) {
+    // Rotate GPU variant order across matrix sizes to reduce systematic
+    // pipeline warm-up / thermal drift favoring the first shader.
+    const size_t rotation = (size_t(rows / 256) + size_t(cols / 256)) % 3;
+    for (size_t i=0; i<3; ++i) {
+        const char* name = names[(i + rotation) % 3];
         variants.push_back(run_variant(assets, name, packed_q40,
                                        activations, reference, rows, cols, repetitions));
     }
