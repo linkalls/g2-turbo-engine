@@ -86,6 +86,12 @@ public final class MainActivity extends Activity {
         heading.setTextSize(23f);
         root.addView(heading);
 
+        Button realModelButton = new Button(this);
+        realModelButton.setText("🚀 実GGUFモデルのPrefill / Decode速度測定");
+        realModelButton.setOnClickListener(v -> startActivity(
+                new Intent(this, ModelBenchmarkActivity.class)));
+        root.addView(realModelButton);
+
         TextView description = new TextView(this);
         description.setText(
                 "Pixel 7 Pro / Tensor G2 — 1回で全ベンチ結果を収集！\n\n" +

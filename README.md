@@ -99,3 +99,57 @@ The Arm KleidiAI project is copyright Arm Limited and licensed under Apache-2.0.
 The upstream source is not vendored here; GitHub Actions checks out the
 exact v1.9.0 commit via `scripts/fetch-kleidiai.sh`. License details:
 https://github.com/ARM-software/kleidiai/blob/v1.9.0/LICENSES/Apache-2.0.txt
+
+## v0.5: Actual GGUF inference on Pixel 7 Pro
+
+**New: one-tap real model performance test.** Open the app and tap
+**「🚀 実GGUFモデルのPrefill / Decode速度測定」**.
+
+Choose one of two options:
+
+1. **「公式 PLaMo Q4_0 GGUFを取得」**: explicitly download the official
+   Preferred Networks PLaMo 3 Translate 0.8B Q4_0 (~548 MB) GGUF directly
+   from Hugging Face. The download is optional; no large model is bundled
+   into the APK, and the app does not begin downloading without a tap.
+2. **「端末内のGGUFを選ぶ」**: select a pre-downloaded GGUF with Android's
+   Storage Access Framework. The file is copied to private app storage
+   because llama.cpp needs random access / mmap for best performance.
+   The copy requires additional free space during import.
+
+Both methods verify the GGUF magic header and store the imported model in
+the app's private directory. Download/copy progress is shown. The selected
+file is retained between sessions; clearing the app data deletes it.
+
+Tap **「🔥 実GGUFで 1 / 2 / 4スレッドを一括測定」**. The program loads the
+actual model once, runs three independent contexts with a deterministic
+PFML3 English-to-Japanese translation prompt, and reports:
+
+- **model_load_ms** (initial GGUF load / mmap and backend init)
+- **context_init_ms** (per-run model context and KV cache creation)
+- **tokenization_ms** (separate from prefill)
+- **prompt_tokens / prefill_eval_ms / prefill_tokens_per_s**
+- **output_tokens_generated / decode_tokens_evaluated**
+- **decode_eval_ms / decode_tokens_per_s**
+- sampler overhead, per-run total latency and generated translation text
+- model description, tensor byte size, number of layers, and pinned
+  llama.cpp source commit, plus device and Android version
+
+Sampling is greedy; decode tok/s excludes the first token sampled from
+prefill logits and excludes sampler time. Exact output token count can vary
+with the generated translation and end-of-generation tokens. The GGUF
+baseline runs with llama.cpp ARM CPU + SDOT, **not the separate custom G2
+Turbo Q4_0 kernel or standalone KleidiAI micro-kernel**. This is deliberate:
+first establish true end-to-end model speed, then integrate specialized
+kernels without confusing a microbenchmark with real model performance.
+
+**Model license:** PLaMo 3 Translate 0.8B is distributed under the
+PLaMo Community License. Review the model card before use:
+https://huggingface.co/pfnet/plamo-3-translate-0.8b-GGUF
+
+**Upstream inference engine:** llama.cpp is MIT-licensed, source pinned to
+commit `e14a779719652200cec7ad58dfa4820edc347182` (Nov 6, 2026) using
+`scripts/fetch-llama.sh`. Its CPU backend is linked as static C++ code.
+The existing Q4_0 microbenchmark and GPU timestamp tests remain available.
+
+The only network access is the optional model download. Inference and result
+storage are performed locally and no telemetry is sent.

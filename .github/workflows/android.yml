@@ -67,7 +67,11 @@ jobs:
         run: |
           bash scripts/fetch-kleidiai.sh
 
-      - name: Build release APK including Vulkan and KleidiAI
+      - name: Fetch pinned llama.cpp with PLaMo3 GGUF support
+        run: |
+          bash scripts/fetch-llama.sh
+
+      - name: Build release APK including real GGUF inference
         run: |
           gradle --no-daemon --stacktrace :app:assembleRelease
 
