@@ -1,21 +1,30 @@
-# G2 Turbo Engine (Pixel 7 Pro / Tensor G2)
+# G2 Turbo Engine v0.3 (Pixel 7 Pro / Tensor G2)
 
 An independent experimental project exploring Q4_0 GEMV kernels, compiled ARM
 DOTPROD, and **real Android Vulkan GPU execution** on Mali-G710.
 
-## v0.2: GPU-enabled Android APK
+## v0.3: One-tap complete benchmark
 
-[Download APK from Releases](https://github.com/linkalls/g2-turbo-engine/releases)
-· [Public Actions builds](https://github.com/linkalls/g2-turbo-engine/actions/workflows/android.yml)
+[Download public APK from Releases](https://github.com/linkalls/g2-turbo-engine/releases)
+· [GitHub Actions](https://github.com/linkalls/g2-turbo-engine/actions/workflows/android.yml)
 
-The same APK measures:
+Install the APK on Pixel 7 Pro. Tap **🔥 全5ケースを一括測定** just once.
+The app automatically runs all five Q4_0 matrix sizes and retains partial results
+even if an individual case fails. After completion, use **統合JSONをコピー**
+or **統合JSONを共有** to provide the *entire batch* in one message.
 
-- Scalar FP32 dequantization + GEMV (correctness reference).
-- ARMv8.2 SDOT GEMV including blockwise INT8 activation quantization.
-- A real Vulkan compute shader dispatch using Android's Vulkan 1.0 driver.
-  GPU name, setup+upload time, cold dispatch wall time, and hot dispatch+fence
-  mean/min/max times are returned with correctness checks. GPU may fail on some
-  driver versions: error output remains available, and CPU results still work.
+A single JSON object contains:
+- Device model, Android SDK, UTC start/end times and overall duration.
+- Each of five matrix shapes with its own timings, accuracy and error status.
+- Scalar reference GEMV, ARM DOTPROD for 1, 2, and 4 CPU threads.
+- Three Vulkan GPU variants: legacy 64-lane, tiled 32-lane, and subgroup reduce.
+- Per-variant GPU dispatch/fence wall time, optional Vulkan timestamp period and
+  GPU timestamp execution time, cold timing, pipeline/setup/upload time,
+  numerical RMSE and a correctness pass flag.
+- If a Vulkan implementation is not supported, its error remains in the JSON.
+  The other alternatives continue; the slowest case does not hide failures.
+
+You can also tap one of the **individual measurement** buttons for a targeted test.
 
 ### PLaMo 3 Translate 0.8B shape presets
 
@@ -23,38 +32,35 @@ Official model config: hidden_size 1536, intermediate_size 6144,
 num_hidden_layers 16, num_attention_heads 16, head_dim 128.
 [Official config](https://huggingface.co/pfnet/plamo-3-translate-0.8b/blob/main/config.json)
 
-- 768×1536 (v0.1 comparison).
-- 1536×1536 (hidden-width proxy).
-- 6144×1536 (MLP gate/up projection shape).
-- 1536×6144 (MLP down projection shape).
-- 2048×1536 (attention query projection shape, 16 heads × 128).
+| Name | Output rows | Input columns |
+| --- | ---: | ---: |
+| Legacy comparison | 768 | 1536 |
+| Hidden-width proxy | 1536 | 1536 |
+| MLP gate/up | 6144 | 1536 |
+| MLP down | 1536 | 6144 |
+| Attention Q (16 x 128) | 2048 | 1536 |
 
-These use **deterministic synthetic Q4_0 values, not the model's weights**.
-The APK does not load a GGUF, translate text, measure tokens/sec, or implement
-an LLM execution graph. KleidiAI is **not yet linked**, so this is not yet a
-four-way comparison. A real inference end-to-end comparison must follow.
+**Important limitations:** The APK uses deterministic synthetic Q4_0 matrices,
+not PLaMo's actual model weights. It does not perform token generation, GGUF
+loading, or inference graph execution. KleidiAI is not integrated yet.
+The scalar reference is deliberately unoptimized. CPU thread costs include
+creation and joining threads; a long-lived inference runtime might behave
+differently. GPU wall time is vkQueueSubmit through vkWaitForFences,
+while Vulkan timestamp (when supported) is the time between GPU TOP_OF_PIPE
+and BOTTOM_OF_PIPE queries around the compute dispatch. Neither is a complete
+end-to-end LLM benchmark. Driver support and numerical correctness must be
+verified on the actual Pixel 7 Pro before drawing performance conclusions.
 
-### How to test
+### Build architecture
 
-Install `g2-turbo-kernel-bench.apk` on your Pixel 7 Pro and press one of
-the five size presets. You will see the CPU timing, GPU timing/error,
-correctness results and raw JSON. Use the copy button to paste the JSON
-back into your issue or ChatGPT conversation.
-
-#### Measurement meaning
-
-- GPU hot timing = wall clock from `vkQueueSubmit` through
-  `vkWaitForFences`; **not GPU-only timestamp time**.
-- GPU setup+upload includes shader read, device creation, pipeline creation,
-  and mapped-buffer upload, but **excludes CPU repacking done before this step**.
-- CPU DOTPROD timing includes the separately measured input quantization.
-- All paths use the same deterministic weights and FP32 input. CPU SDOT path
-  incurs lossy blockwise INT8 activation quantization, while GPU uses FP32.
-- Fences and a compute-to-host barrier ensure correct readback.
-- GPU correctness is validated against the scalar reference. Any error
-  reported by the Vulkan driver **must not be interpreted as GPU acceleration**.
-- Performance is specific to these kernels and does not imply an equal
-  improvement in PLaMo translation throughput.
+- `native/src/kernel_bench.cpp`: scalar Q4_0, ARM DOTPROD and CPU threading.
+- `native/src/vulkan_bench.cpp`: Vulkan buffers, dispatch, timestamp queries,
+  correctness and multi-variant comparison.
+- `native/shaders/q4_0_gemv.comp`: baseline 64-lane shader.
+- `native/shaders/q4_0_gemv_32.comp`: tiled32 vectorized shader.
+- `native/shaders/q4_0_gemv_subgroup.comp`: subgroup arithmetic reduction.
+- `app/src/main/java/dev/poteto/g2turbo/MainActivity.java`: one-tap automatic
+  batch orchestration, live progress and aggregated JSON export.
 
 ### Security and reproducibility
 

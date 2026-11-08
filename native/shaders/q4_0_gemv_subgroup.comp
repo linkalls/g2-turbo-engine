@@ -1,0 +1,48 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+// Native subgroup reduction: one workgroup per row, 64 invocations.
+// Replaces 6 shared-memory synchronization reductions with subgroupAdd()
+// plus a tiny cross-subgroup reduction. Requires Vulkan 1.1 subgroup
+// arithmetic compute support; runtime MUST check subgroup features first.
+layout(local_size_x=64,local_size_y=1,local_size_z=1) in;
+layout(set=0,binding=0,std430) readonly buffer Weights { uint w[]; };
+layout(set=0,binding=1,std430) readonly buffer Activations { float x[]; };
+layout(set=0,binding=2,std430) writeonly buffer Output { float y[]; };
+layout(push_constant) uniform Size { uint rows; uint cols; } shape;
+shared float subgroup_sums[64];
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    const uint lane = gl_LocalInvocationID.x;
+    const uint blocks = shape.cols / 32u;
+    float sum = 0.0;
+    for (uint b = lane; b < blocks; b += 64u) {
+        const uint base = (row*blocks+b)*5u;
+        const float scale = unpackHalf2x16(w[base]).x;
+        const uint xb = b*32u;
+        float d = 0.0;
+        for (uint i=0u; i<4u; ++i) {
+            const uint packed = w[base+i+1u];
+            for (uint j=0u;j<4u;++j) {
+                const uint q=(packed>>(j*8u))&255u;
+                const uint offset=i*4u+j;
+                d+=(float(int(q&15u)-8)*x[xb+offset]);
+                d+=(float(int(q>>4u)-8)*x[xb+offset+16u]);
+            }
+        }
+        sum+=scale*d;
+    }
+    // Subgroup size is implementation-defined (8,16,32,64...).
+    // Exactly one invocation per subgroup writes its reduced sum.
+    const float reduced = subgroupAdd(sum);
+    if (subgroupElect()) subgroup_sums[gl_SubgroupID]=reduced;
+    barrier();
+    if (lane==0u) {
+        float total=0.0;
+        for (uint subgroup=0u;subgroup<gl_NumSubgroups;++subgroup)
+            total+=subgroup_sums[subgroup];
+        y[row]=total;
+    }
+}

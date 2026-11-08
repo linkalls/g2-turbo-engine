@@ -4,7 +4,9 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.AssetManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
@@ -12,22 +14,22 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * G2 Turbo Engine v0.2
+ * G2 Turbo Engine v0.3 — one-tap comprehensive benchmark.
  *
- * Pixel 7 Pro 上でQ4_0の3つの実行経路を比較する:
- * 1. スカラーFP32参照実装
- * 2. ARMv8.2 SDOT + ブロック単位INT8入力
- * 3. Vulkan GPU (Mali-G710 / 対応GPU)
+ * 全5サイズを自動で計測してひとつのJSONへ集約する。
+ * 各サイズではスカラー・ARM SDOT(1/2/4スレッド)・Vulkan 3実装を比較。
+ * 途中に失敗したサイズがあっても残りは続行し、エラーもJSONに保存する。
  *
- * 計測は完全オフライン。実モデルの推論とは区別すること。
- * 長時間のGPU待機をUIスレッドから実行しない。
+ * このアプリはGGUFを読み込まない。LLMのtoken/sベンチではない。
  */
 public final class MainActivity extends Activity {
     static {
@@ -37,165 +39,304 @@ public final class MainActivity extends Activity {
     private native String nativeBenchmark(
             int rows, int cols, int repetitions, AssetManager assets);
 
-    private TextView results;
-    private final List<Button> benchmarkButtons = new ArrayList<>();
-    private String latestRaw = "";
+    private static final class Case {
+        final String id;
+        final String title;
+        final int rows;
+        final int cols;
+        final int repetitions;
+
+        Case(String id, String title, int rows, int cols, int repetitions) {
+            this.id = id;
+            this.title = title;
+            this.rows = rows;
+            this.cols = cols;
+            this.repetitions = repetitions;
+        }
+    }
+
+    // Fixed ordering makes measurements comparable between test runs.
+    private static final Case[] CASES = {
+        new Case("legacy", "従来型 768×1536", 768, 1536, 12),
+        new Case("hidden", "Hidden 1536×1536", 1536, 1536, 10),
+        new Case("mlp_up", "MLP Up 6144×1536", 6144, 1536, 6),
+        new Case("mlp_down", "MLP Down 1536×6144", 1536, 6144, 6),
+        new Case("attention_q", "Attention Q 2048×1536", 2048, 1536, 8)
+    };
+
+    private final List<Button> runButtons = new ArrayList<>();
+    private Button copyButton;
+    private Button shareButton;
+    private TextView statusView;
+    private TextView resultView;
+    private String lastJson = "";
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
 
         ScrollView scroll = new ScrollView(this);
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (18 * getResources().getDisplayMetrics().density);
-        layout.setPadding(pad, pad, pad, pad);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int padding = (int) (18 * getResources().getDisplayMetrics().density);
+        root.setPadding(padding, padding, padding, padding);
 
         TextView heading = new TextView(this);
-        heading.setText("G2 Turbo Engine v0.2");
-        heading.setTextSize(23);
-        layout.addView(heading);
+        heading.setText("G2 Turbo Engine v0.3");
+        heading.setTextSize(23f);
+        root.addView(heading);
 
         TextView description = new TextView(this);
         description.setText(
-                "Tensor G2 / Mali-G710 — Q4_0 GEMV実験\n\n" +
-                "Scalar FP32 vs ARM SDOT vs 実Vulkan GPUを比較。\n" +
-                "Vulkan値はGPU実行を送信して完了待ちする時間（wall time）。" +
-                "初回パイプライン生成・重み転送時間は別表示。\n\n" +
-                "実際のPLaMo 3 Translate 0.8Bは hidden=1536、" +
-                "intermediate=6144、16層。モデルの行列演算サイズに" +
-                "近いプリセットを用意した。\n\n" +
-                "※ モデル自体を動かすものではなく、tok/sは測れない。" +
-                "KleidiAIはまだ未接続。GPUドライバにより非対応の場合は" +
-                "失敗理由を表示する。\n");
-        description.setTextSize(14);
-        layout.addView(description);
+                "Pixel 7 Pro / Tensor G2 — 1回で全ベンチ結果を収集！\n\n" +
+                "5サイズ × CPU(スカラー・DOTPROD 1/2/4スレッド)" +
+                " × Vulkan GPU(従来64・Tiled32・Subgroup)。\n" +
+                "Vulkanの純演算時間はGPU Timestampで計測できる場合に記録。" +
+                "対応外のGPU方式はエラー理由も残す。\n\n" +
+                "※ KleidiAI未統合。PLaMo実モデルのtoken/s計測ではない。\n");
+        description.setTextSize(14f);
+        root.addView(description);
 
-        addBenchButton(layout, "従来の比較：768 × 1536", 768, 1536, 12);
-        addBenchButton(layout, "Hidden型：1536 × 1536", 1536, 1536, 10);
-        addBenchButton(layout, "MLP gate/up型：6144 × 1536", 6144, 1536, 6);
-        addBenchButton(layout, "MLP down型：1536 × 6144", 1536, 6144, 6);
-        addBenchButton(layout, "Attention Q型：2048 × 1536", 2048, 1536, 8);
+        Button runAll = new Button(this);
+        runAll.setText("🔥 全5ケースを一括測定");
+        root.addView(runAll);
+        runButtons.add(runAll);
+        runAll.setOnClickListener(v -> startBenchmark(true, null));
 
-        Button copyButton = new Button(this);
-        copyButton.setText("最後のJSON結果をコピー");
+        TextView section = new TextView(this);
+        section.setText("個別測定（必要な場合のみ）");
+        section.setTextSize(13f);
+        root.addView(section);
+
+        for (Case item : CASES) {
+            Button button = new Button(this);
+            button.setText(item.title);
+            root.addView(button);
+            runButtons.add(button);
+            button.setOnClickListener(v -> startBenchmark(false, item));
+        }
+
+        copyButton = new Button(this);
+        copyButton.setText("統合JSONをコピー");
+        copyButton.setEnabled(false);
         copyButton.setOnClickListener(v -> {
-            if (latestRaw.isEmpty()) return;
-            ClipboardManager manager =
-                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (lastJson.isEmpty()) return;
+            ClipboardManager manager = (ClipboardManager)
+                    getSystemService(Context.CLIPBOARD_SERVICE);
             if (manager != null) {
                 manager.setPrimaryClip(
-                        ClipData.newPlainText("G2 Turbo benchmark", latestRaw));
+                        ClipData.newPlainText("G2 Turbo all benchmarks", lastJson));
             }
         });
-        layout.addView(copyButton);
+        root.addView(copyButton);
 
-        results = new TextView(this);
-        results.setTextSize(14);
-        results.setTextIsSelectable(true);
-        results.setText("上のプリセットを選ぶと比較が始まる。\n" +
-                        "別途、充電状態・発熱・他アプリの動作で測定値は変わる。");
-        layout.addView(results);
+        shareButton = new Button(this);
+        shareButton.setText("統合JSONを共有");
+        shareButton.setEnabled(false);
+        shareButton.setOnClickListener(v -> {
+            if (lastJson.isEmpty()) return;
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("application/json");
+            send.putExtra(Intent.EXTRA_TEXT, lastJson);
+            startActivity(Intent.createChooser(send, "ベンチマーク結果を共有"));
+        });
+        root.addView(shareButton);
 
-        scroll.addView(layout);
+        statusView = new TextView(this);
+        statusView.setTextSize(15f);
+        statusView.setText("未測定。上の「全5ケースを一括測定」を押してね。");
+        root.addView(statusView);
+
+        resultView = new TextView(this);
+        resultView.setTextSize(13f);
+        resultView.setTextIsSelectable(true);
+        resultView.setText("計測が終わると、ここに結果の概要と統合JSONが出る。");
+        root.addView(resultView);
+
+        scroll.addView(root);
         setContentView(scroll);
     }
 
-    private void addBenchButton(
-            LinearLayout parent, String title, int rows, int cols, int repetitions) {
-        Button button = new Button(this);
-        button.setText(title);
-        parent.addView(button);
-        benchmarkButtons.add(button);
-        button.setOnClickListener((View unused) ->
-                startBenchmark(rows, cols, repetitions));
+    private void setWorking(boolean working) {
+        for (Button b : runButtons) b.setEnabled(!working);
+        copyButton.setEnabled(!working && !lastJson.isEmpty());
+        shareButton.setEnabled(!working && !lastJson.isEmpty());
     }
 
-    private void startBenchmark(int rows, int cols, int repetitions) {
-        for (Button button : benchmarkButtons) button.setEnabled(false);
-        latestRaw = "";
-        results.setText(String.format(
-                Locale.US,
-                "%d × %d のQ4_0行列を生成・CPU測定・GPU実行中…\n" +
-                "Vulkan初回はシェーダーのコンパイルに時間がかかる場合がある。",
-                rows, cols));
+    private void startBenchmark(boolean all, Case selected) {
+        if (!all && selected == null) return;
+        lastJson = "";
+        setWorking(true);
+
+        final Case[] runs = all ? CASES : new Case[]{selected};
+        final String startedAt = Instant.now().toString();
+        final long startedNs = System.nanoTime();
+        statusView.setText(String.format(Locale.US, "0/%d ケース完了", runs.length));
+        resultView.setText("Q4_0行列の生成とCPU/GPU計測を開始…\n" +
+                "一部のGPUで実行に失敗しても、ほかのサイズは続行する。");
 
         new Thread(() -> {
-            String raw;
-            try {
-                raw = nativeBenchmark(rows, cols, repetitions, getAssets());
-            } catch (Throwable error) {
-                raw = "JNIエラー: " + error.getClass().getSimpleName() +
-                        ": " + error.getMessage();
+            JSONArray output = new JSONArray();
+            int succeeded = 0;
+            int failed = 0;
+            for (int index = 0; index < runs.length; index++) {
+                final Case item = runs[index];
+                final int currentIndex = index;
+                runOnUiThread(() -> statusView.setText(String.format(
+                        Locale.US, "%d/%d 完了 — 実行中: %s",
+                        currentIndex, runs.length, item.title)));
+
+                JSONObject entry = new JSONObject();
+                try {
+                    entry.put("case_id", item.id);
+                    entry.put("label", item.title);
+                    entry.put("rows", item.rows);
+                    entry.put("cols", item.cols);
+                    entry.put("repetitions", item.repetitions);
+
+                    // A completely separate native invocation per case.
+                    // Vulkan failure is recorded in nested JSON rather than
+                    // aborting the following test sizes.
+                    final long caseStart = System.nanoTime();
+                    String raw = nativeBenchmark(
+                            item.rows, item.cols, item.repetitions, getAssets());
+                    entry.put("duration_ms", (System.nanoTime() - caseStart) / 1e6);
+                    JSONObject data = new JSONObject(raw);
+                    entry.put("measurements", data);
+                    boolean cpuPass = data.optBoolean("pass", false);
+                    JSONObject vk = data.optJSONObject("vulkan");
+                    boolean gpuPass = vk != null && "ok".equals(vk.optString("status"));
+                    entry.put("cpu_pass", cpuPass);
+                    entry.put("gpu_has_passing_variant", gpuPass);
+                    entry.put("status", cpuPass ? "ok" : "error");
+                    if (cpuPass) succeeded++;
+                    else failed++;
+                } catch (Throwable error) {
+                    // Capture even parse/JNI/runtime errors with accurate per-case metadata.
+                    try {
+                        entry.put("status", "error");
+                        entry.put("error", error.getClass().getSimpleName()
+                                + ": " + String.valueOf(error.getMessage()));
+                    } catch (Exception ignored) {
+                        // JSONObject.put on string and positive dimensions is safe.
+                    }
+                    failed++;
+                }
+                output.put(entry);
+
+                final int done = index + 1;
+                final int good = succeeded;
+                final int bad = failed;
+                final String summary = makeSummary(output);
+                runOnUiThread(() -> {
+                    statusView.setText(String.format(
+                            Locale.US, "%d/%d 完了（CPU PASS: %d、失敗: %d）",
+                            done, runs.length, good, bad));
+                    resultView.setText(summary);
+                });
             }
-            final String data = raw;
-            runOnUiThread(() -> {
-                latestRaw = data;
-                results.setText(makeReport(data));
-                for (Button button : benchmarkButtons) button.setEnabled(true);
-            });
-        }, "g2-turbo-vulkan-bench").start();
+
+            JSONObject aggregate = new JSONObject();
+            try {
+                aggregate.put("schema_version", 1);
+                aggregate.put("engine", "G2 Turbo Engine v0.3 Q4_0 GEMV");
+                aggregate.put("full_llm_inference", false);
+                aggregate.put("kleidiai_integrated", false);
+                aggregate.put("batch_mode", all);
+                aggregate.put("started_at_utc", startedAt);
+                aggregate.put("finished_at_utc", Instant.now().toString());
+                aggregate.put("duration_ms", (System.nanoTime() - startedNs) / 1e6);
+                aggregate.put("device_manufacturer", Build.MANUFACTURER);
+                aggregate.put("device_model", Build.MODEL);
+                aggregate.put("android_sdk", Build.VERSION.SDK_INT);
+                aggregate.put("cases_total", runs.length);
+                aggregate.put("cases_cpu_pass", succeeded);
+                aggregate.put("cases_error", failed);
+                aggregate.put("cases", output);
+                // Pretty printing is for easy human inspection and copy/paste.
+                final String json = aggregate.toString(2);
+                final String report = makeSummary(output);
+                runOnUiThread(() -> {
+                    lastJson = json;
+                    setWorking(false);
+                    statusView.setText(String.format(Locale.US,
+                            "✅ 完了: 全%dケース中 %d成功・%d失敗。" +
+                            " 統合JSONのコピー/共有が可能。",
+                            runs.length, goodCount(output), runs.length - goodCount(output)));
+                    resultView.setText(report +
+                            "\n\n===== 全ケース統合JSON =====\n" + json);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setWorking(false);
+                    statusView.setText("JSONの集約に失敗: " + e.getMessage());
+                    resultView.setText(makeSummary(output));
+                });
+            }
+        }, "g2-turbo-batch-benchmark").start();
     }
 
-    private String makeReport(String json) {
-        try {
-            JSONObject obj = new JSONObject(json);
-            JSONObject vk = obj.optJSONObject("vulkan");
-
-            final double scalarMs = obj.getDouble("reference_ms");
-            final double cpuMs = obj.getDouble("dotprod_ms") +
-                    obj.getDouble("activation_quantization_ms");
-
-            StringBuilder summary = new StringBuilder();
-            summary.append("===== Pixel CPU =====\n");
-            summary.append(String.format(Locale.US,
-                    "Scalar FP32: %.4f ms\n", scalarMs));
-            summary.append(String.format(Locale.US,
-                    "ARM SDOT + 入力量子化: %.4f ms\n", cpuMs));
-            summary.append(String.format(Locale.US,
-                    "CPU基準に対する高速化: %.2f倍\n",
-                    scalarMs / Math.max(cpuMs, 1e-9)));
-            summary.append(String.format(Locale.US,
-                    "CPU NRMSE: %.5f / PASS: %s\n\n",
-                    obj.optDouble("normalized_rmse"),
-                    obj.optBoolean("pass")));
-
-            summary.append("===== Vulkan GPU =====\n");
-            if (vk != null) {
-                final String status = vk.optString("status", "unknown");
-                summary.append("ステータス: ").append(status).append("\n");
-                summary.append("GPU: ").append(vk.optString("device")).append("\n");
-                if ("ok".equals(status)) {
-                    final double gpuMs =
-                            vk.getDouble("hot_dispatch_wall_mean_ms");
-                    summary.append(String.format(Locale.US,
-                            "Warm dispatch+fence: %.4f ms\n", gpuMs));
-                    summary.append(String.format(Locale.US,
-                            "CPU SDOT / GPU時間比: %.2f倍\n",
-                            cpuMs / Math.max(gpuMs, 1e-9)));
-                    summary.append(String.format(Locale.US,
-                            "GPU初期化+転送: %.2f ms\n",
-                            vk.getDouble("setup_including_upload_ms")));
-                    summary.append(String.format(Locale.US,
-                            "GPU NRMSE: %.6f / PASS: %s\n",
-                            vk.getDouble("nrmse"), vk.optBoolean("pass")));
-                } else {
-                    summary.append("理由: ").append(
-                            vk.optString("message", "精度確認エラー")).append("\n");
-                    if (vk.has("nrmse")) {
-                        summary.append("GPU NRMSE: ")
-                                .append(vk.getDouble("nrmse")).append("\n");
-                    }
-                }
-            } else {
-                summary.append("GPUデータなし\n");
-            }
-
-            summary.append("\n===== 生のJSON（コピー可能） =====\n");
-            summary.append(json);
-            return summary.toString();
-        } catch (Exception ex) {
-            return "結果の解析に失敗: " + ex.getMessage() + "\n\n" + json;
+    private static int goodCount(JSONArray entries) {
+        int count = 0;
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject item = entries.optJSONObject(i);
+            if (item != null && "ok".equals(item.optString("status"))) count++;
         }
+        return count;
+    }
+
+    private static String makeSummary(JSONArray entries) {
+        StringBuilder sb = new StringBuilder("===== 測定結果 =====\n");
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject item = entries.optJSONObject(i);
+            if (item == null) continue;
+            sb.append("\n").append(i + 1).append(". ")
+                    .append(item.optString("label")).append("\n");
+            JSONObject data = item.optJSONObject("measurements");
+            if (data == null) {
+                sb.append("ERROR: ").append(item.optString("error")).append("\n");
+                continue;
+            }
+            sb.append(String.format(Locale.US,
+                    "CPU scalar %.4fms | DOTPROD %.4fms (+量子化)\n",
+                    data.optDouble("reference_ms"),
+                    data.optDouble("dotprod_ms") +
+                            data.optDouble("activation_quantization_ms")));
+            JSONArray cpu = data.optJSONArray("cpu_thread_benchmarks");
+            if (cpu != null) {
+                for (int j = 0; j < cpu.length(); j++) {
+                    JSONObject thread = cpu.optJSONObject(j);
+                    if (thread == null) continue;
+                    sb.append(String.format(Locale.US,
+                            "  CPU %d threads: %.4fms\n",
+                            thread.optInt("threads"),
+                            thread.optDouble("total_with_activation_quant_ms")));
+                }
+            }
+            JSONObject gpu = data.optJSONObject("vulkan");
+            if (gpu == null) continue;
+            sb.append("GPU best: ").append(gpu.optString("best_variant"))
+                    .append("\n");
+            JSONArray variants = gpu.optJSONArray("variants");
+            if (variants == null) continue;
+            for (int j = 0; j < variants.length(); j++) {
+                JSONObject v = variants.optJSONObject(j);
+                if (v == null) continue;
+                sb.append("  ").append(v.optString("variant")).append(": ");
+                if ("ok".equals(v.optString("status"))) {
+                    sb.append(String.format(Locale.US,
+                            "wall %.4fms, GPU timestamp %s\n",
+                            v.optDouble("hot_dispatch_wall_mean_ms"),
+                            v.optBoolean("gpu_timestamp_available")
+                                    ? String.format(Locale.US, "%.4fms",
+                                    v.optDouble("hot_gpu_timestamp_mean_ms"))
+                                    : "非対応"));
+                } else {
+                    sb.append(v.optString("status")).append(" ")
+                            .append(v.optString("message")).append("\n");
+                }
+            }
+        }
+        return sb.toString();
     }
 }

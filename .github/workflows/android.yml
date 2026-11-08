@@ -56,11 +56,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq glslang-tools spirv-tools
           mkdir -p app/src/main/assets/shaders
-          glslangValidator -V -S comp \
-            native/shaders/q4_0_gemv.comp \
-            -o app/src/main/assets/shaders/q4_0_gemv.spv
-          spirv-val app/src/main/assets/shaders/q4_0_gemv.spv
-          test -s app/src/main/assets/shaders/q4_0_gemv.spv
+          for variant in q4_0_gemv q4_0_gemv_32 q4_0_gemv_subgroup; do
+            glslangValidator -V --target-env vulkan1.1 -S comp \
+              "native/shaders/${variant}.comp" \
+              -o "app/src/main/assets/shaders/${variant}.spv"
+            spirv-val --target-env vulkan1.1 "app/src/main/assets/shaders/${variant}.spv"
+          done
 
       - name: Build release APK including Vulkan
         run: |
@@ -72,7 +73,9 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           unzip -l "$APK" | grep -F "lib/arm64-v8a/libg2turbo.so"
-          unzip -l "$APK" | grep -F "assets/shaders/q4_0_gemv.spv"
+          for variant in q4_0_gemv q4_0_gemv_32 q4_0_gemv_subgroup; do
+            unzip -l "$APK" | grep -F "assets/shaders/${variant}.spv"
+          done
           mkdir -p dist
           cp "$APK" dist/g2-turbo-kernel-bench.apk
           (cd dist && sha256sum g2-turbo-kernel-bench.apk > SHA256SUMS.txt)

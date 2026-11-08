@@ -1,0 +1,50 @@
+#version 450
+
+// 32-thread tiled Q4_0 GEMV: one workgroup per output row.
+// Each lane owns a full 32-weight Q4_0 block and locally accumulates
+// multiple blocks separated by 32. Reduce 32 partial sums in shared memory.
+// Requires only Vulkan 1.0. All lanes always reach all barriers.
+layout(local_size_x=32,local_size_y=1,local_size_z=1) in;
+layout(set=0,binding=0,std430) readonly buffer Weights { uint w[]; };
+layout(set=0,binding=1,std430) readonly buffer Activations { float x[]; };
+layout(set=0,binding=2,std430) writeonly buffer Output { float y[]; };
+layout(push_constant) uniform Size { uint rows; uint cols; } shape;
+shared float partial[32];
+
+void main() {
+    const uint row = gl_WorkGroupID.x;
+    const uint lane = gl_LocalInvocationID.x;
+    const uint blocks = shape.cols / 32u;
+    float sum = 0.0;
+    for (uint b = lane; b < blocks; b += 32u) {
+        const uint base = (row * blocks + b) * 5u;
+        const float scale = unpackHalf2x16(w[base]).x;
+        const uint xb = b * 32u;
+        float d = 0.0;
+        // Byte-level pair dequantization: index from a 32-wide activation tile.
+        for (uint i = 0u; i < 4u; ++i) {
+            const uint packed = w[base + i + 1u];
+            const uvec4 q = uvec4(
+                (packed      ) & 255u,
+                (packed >>  8) & 255u,
+                (packed >> 16) & 255u,
+                (packed >> 24) & 255u);
+            const uint a = 4u*i;
+            const vec4 lo = vec4(q & 15u) - vec4(8.0);
+            const vec4 hi = vec4(q >> 4u) - vec4(8.0);
+            const vec4 xlo = vec4(x[xb+a], x[xb+a+1u],
+                                  x[xb+a+2u], x[xb+a+3u]);
+            const vec4 xhi = vec4(x[xb+a+16u], x[xb+a+17u],
+                                  x[xb+a+18u], x[xb+a+19u]);
+            d += dot(lo,xlo) + dot(hi,xhi);
+        }
+        sum += d * scale;
+    }
+    partial[lane] = sum;
+    barrier();
+    for (uint step = 16u; step > 0u; step >>= 1u) {
+        if (lane < step) partial[lane] += partial[lane+step];
+        barrier();
+    }
+    if (lane == 0u) y[row] = partial[0];
+}

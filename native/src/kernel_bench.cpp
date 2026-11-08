@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 struct AAssetManager;  // Forward declaration for Android-only benchmarking.
 
@@ -158,9 +160,9 @@ QuantizedInput quantize(const float* x, int cols) {
 
 // Optimized path: 4-bit nibble unpacking to signed int8, followed by SDOT.
 // The input vector is quantized once and reused across rows.
-void dotprod_gemv(const Matrix& m, const QuantizedInput& x, float* out) {
+void dotprod_gemv_rows(const Matrix& m, const QuantizedInput& x, float* out, int first, int last) {
     const int blocks = m.cols / kBlock;
-    for (int r = 0; r < m.rows; ++r) {
+    for (int r = first; r < last; ++r) {
         const Q40* row = m.weights.data() + size_t(r) * blocks;
         float result = 0;
         for (int b = 0; b < blocks; ++b) {
@@ -192,6 +194,32 @@ void dotprod_gemv(const Matrix& m, const QuantizedInput& x, float* out) {
     }
 }
 
+// Partition matrix rows between workers. Each worker writes disjoint outputs.
+void dotprod_gemv_parallel(const Matrix& m, const QuantizedInput& x,
+                           float* out, int threads) {
+    const int count = std::max(1, std::min(threads, m.rows));
+    if (count == 1) {
+        dotprod_gemv_rows(m, x, out, 0, m.rows);
+        return;
+    }
+    // This benchmark includes per-inference thread startup and join costs.
+    // A persistent worker pool may reduce these costs in a real LLM runtime.
+    std::vector<std::thread> workers;
+    workers.reserve(size_t(count-1));
+    for (int i=1; i<count; ++i) {
+        const int from = int(int64_t(m.rows)*i/count);
+        const int to = int(int64_t(m.rows)*(i+1)/count);
+        workers.emplace_back([&m,&x,out,from,to] {
+            dotprod_gemv_rows(m,x,out,from,to);
+        });
+    }
+    dotprod_gemv_rows(m,x,out,0,m.rows/count);
+    for (auto& worker : workers) worker.join();
+}
+void dotprod_gemv(const Matrix& m, const QuantizedInput& x, float* out) {
+    dotprod_gemv_parallel(m,x,out,1);
+}
+
 // Repacks GGUF Q4_0 18-byte blocks into 5x32-bit words for the planned
 // Vulkan kernel: first word holds FP16 scale; remaining four hold packed bytes.
 // The Android GPU path dispatches this packed layout through Vulkan.
@@ -219,6 +247,9 @@ double milliseconds(F function, int n) {
 
 std::string bench(int rows, int cols, int repetitions,
                   AAssetManager* assets = nullptr) {
+#ifndef __ANDROID__
+    (void)assets;
+#endif
     if (rows < 1 || rows > 8192 || cols < 32 || cols > 16384 ||
         cols % 32 != 0 || repetitions < 1 || repetitions > 100)
         throw std::invalid_argument("invalid benchmark dimensions");
@@ -270,6 +301,31 @@ std::string bench(int rows, int cols, int repetitions,
         [&] { dotprod_gemv(matrix, quantized, optimized.data()); }, repetitions);
 
     const bool pass = std::isfinite(nrmse) && nrmse < 0.05;
+
+    // Compare CPU 1/2/4 threads using IDENTICAL weights and activations.
+    // Quantization is reused within one inference; its cost is included.
+    std::ostringstream thread_results;
+    thread_results << std::fixed << std::setprecision(6) << "[";
+    for (int threads : {1,2,4}) {
+        if (threads > 1) thread_results << ",";
+        const double elapsed = milliseconds([&] {
+            dotprod_gemv_parallel(matrix, quantized, optimized.data(), threads);
+        }, repetitions);
+        double diff2 = 0;
+        for (int row=0;row<rows;++row) {
+            const double delta = optimized[row]-reference[row];
+            diff2 += delta*delta;
+        }
+        const double thread_nrmse = std::sqrt(
+            diff2/std::max(reference_squared,1e-30));
+        thread_results << "{\"threads\":" << threads
+                       << ",\"kernel_wall_ms\":" << elapsed
+                       << ",\"total_with_activation_quant_ms\":" << (elapsed + quant_ms)
+                       << ",\"nrmse\":" << thread_nrmse
+                       << ",\"pass\":" << (std::isfinite(thread_nrmse) && thread_nrmse < 0.05 ? "true" : "false")
+                       << "}";
+    }
+    thread_results << "]";
     std::ostringstream json;
     json << std::fixed << std::setprecision(6)
          << "{\n"
@@ -293,6 +349,8 @@ std::string bench(int rows, int cols, int repetitions,
          << "  \"max_absolute_error\": " << max_error << ",\n"
          << "  \"reference_checksum\": " << reference_checksum << ",\n"
          << "  \"optimized_checksum\": " << optimized_checksum << ",\n"
+         << "  \"cpu_thread_benchmarks\": " << thread_results.str() << ",\n"
+         << "  \"kleidiai_integrated\": false,\n"
          << "  \"pass\": " << (pass ? "true" : "false")
 #ifdef __ANDROID__
          << ",\n  \"vulkan\": "
